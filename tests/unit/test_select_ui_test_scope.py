@@ -88,7 +88,9 @@ def _stub(bin_dir: Path, name: str, body: str) -> None:
     stub.chmod(0o755)
 
 
-def _run_step(tmp_path: Path, changed: list[str], base_sha: str = "basesha") -> tuple[int, str, list[list[str]]]:
+def _run_step(
+    tmp_path: Path, changed: list[str], base_sha: str = "basesha", workers: str = ""
+) -> tuple[int, str, list[list[str]]]:
     """Run the workflow step's real shell; return its status, stdout and every npm argv."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -111,6 +113,7 @@ def _run_step(tmp_path: Path, changed: list[str], base_sha: str = "basesha") -> 
     env["GITHUB_REF_NAME"] = "release_branch"
     env["CHANGED_FILES"] = str(changed_file)
     env["NPM_LOG"] = str(npm_log)
+    env["UI_TEST_WORKERS"] = workers
 
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(step)],
@@ -124,7 +127,7 @@ def _run_step(tmp_path: Path, changed: list[str], base_sha: str = "basesha") -> 
     return result.returncode, result.stdout + result.stderr, invocations
 
 
-def _related_argv(changed: list[str]) -> list[str]:
+def _related_argv(changed: list[str], workers: str = "14") -> list[str]:
     return [
         "run",
         "test",
@@ -135,15 +138,16 @@ def _related_argv(changed: list[str]) -> list[str]:
         "--passWithNoTests",
         "--pool",
         "forks",
-        "--maxWorkers=14",
+        f"--maxWorkers={workers}",
     ]
 
 
-def test_step_runs_related_for_a_src_only_pull_request(tmp_path: Path) -> None:
+@pytest.mark.parametrize("workers", ["", "2"])
+def test_step_runs_related_for_a_src_only_pull_request(tmp_path: Path, workers: str) -> None:
     changed = ["src/app/page.tsx", "src/lib/http/client.ts"]
-    returncode, output, invocations = _run_step(tmp_path, changed)
+    returncode, output, invocations = _run_step(tmp_path, changed, workers=workers)
     assert returncode == 0, output
-    assert invocations == [_related_argv(changed)]
+    assert invocations == [_related_argv(changed, workers or "14")]
 
 
 @pytest.mark.parametrize("changed_file", NON_SRC_FILES)
@@ -154,10 +158,11 @@ def test_step_runs_the_full_suite_when_a_changed_file_is_outside_src(tmp_path: P
     assert "related" not in " ".join(invocations[0])
 
 
-def test_step_runs_the_full_suite_on_a_push(tmp_path: Path) -> None:
-    returncode, output, invocations = _run_step(tmp_path, ["src/app/page.tsx"], base_sha="")
+@pytest.mark.parametrize("workers", ["", "2"])
+def test_step_runs_the_full_suite_on_a_push(tmp_path: Path, workers: str) -> None:
+    returncode, output, invocations = _run_step(tmp_path, ["src/app/page.tsx"], base_sha="", workers=workers)
     assert returncode == 0, output
-    assert invocations == [FULL_SUITE_ARGV]
+    assert invocations == [FULL_SUITE_ARGV[:-1] + [f"--maxWorkers={workers or '14'}"]]
 
 
 def test_step_runs_nothing_when_the_pull_request_touches_no_dashboard_file(tmp_path: Path) -> None:
