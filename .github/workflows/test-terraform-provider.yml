@@ -76,7 +76,7 @@ jobs:
             mkdir -p "dist/$target"
             GOOS="${target%_*}" GOARCH="${target#*_}" go build -trimpath -ldflags="-s -w" \
               -o "dist/$target/terraform-provider-litellm_v${PROVIDER_VERSION}" .
-            cp ../../LICENSE "dist/$target/LICENSE"
+            cp LICENSE "dist/$target/LICENSE"
             (cd "dist/$target" && zip -X "../terraform-provider-litellm_${PROVIDER_VERSION}_${target}.zip" ./*)
           done
           git rev-parse HEAD > dist/SOURCE_COMMIT
