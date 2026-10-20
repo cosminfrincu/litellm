@@ -56,7 +56,7 @@ The following arguments are supported:
 
 * `max_budget` - (Optional) Maximum budget for this key. This sets an upper limit on the total spend allowed for this key.
 
-* `user_id` - (Optional) User ID associated with this key. This links the key to a specific user in the LiteLLM system.
+* `user_id` - (Optional) User ID associated with this key. Set another nonempty ID to reassign ownership in place. Unchanged ownership is not sent during unrelated updates
 
 * `team_id` - (Optional) Team ID associated with this key. This links the key to a specific team in the LiteLLM system.
 

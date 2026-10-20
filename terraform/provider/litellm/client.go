@@ -169,6 +169,9 @@ func (c *Client) UpdateKey(key *Key) (*Key, error) {
 	if key.RouterSettings != nil {
 		updateData["router_settings"] = key.RouterSettings
 	}
+	if key.UserID != "" {
+		updateData["user_id"] = key.UserID
+	}
 	if key.ModelRPMLimit != nil {
 		updateData["model_rpm_limit"] = key.ModelRPMLimit
 	}

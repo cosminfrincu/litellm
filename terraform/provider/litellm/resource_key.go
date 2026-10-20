@@ -401,6 +401,9 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{
 
 	key := &Key{Key: d.Id()}
 	mapResourceDataToKey(d, key)
+	if !d.HasChange("user_id") {
+		key.UserID = ""
+	}
 	if allowedRoutesNotConfigured(d) {
 		key.AllowedRoutes = nil
 	}

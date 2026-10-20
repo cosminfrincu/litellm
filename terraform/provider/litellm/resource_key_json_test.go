@@ -389,6 +389,29 @@ func TestKeyJSONNumberComparisonPreservesPrecision(t *testing.T) {
 	}
 }
 
+func TestKeyUpdateOwnerAssignment(t *testing.T) {
+	for _, owner := range []string{"current-owner", "new-owner"} {
+		t.Run(owner, func(t *testing.T) {
+			proxy := &jsonKeyProxy{info: map[string]interface{}{
+				"user_id": "current-owner", "models": []interface{}{"old-model"},
+			}}
+			srv := httptest.NewServer(proxy.handler(t))
+			defer srv.Close()
+			state := applyKeyUpdate(t, NewClient(srv.URL, "test-key", true),
+				map[string]string{"user_id": "current-owner", "models.#": "1", "models.0": "old-model"},
+				map[string]interface{}{"user_id": owner, "models": []interface{}{"new-model"}},
+			)
+			if state.Attributes["user_id"] != owner {
+				t.Errorf("owner = %q, want %q", state.Attributes["user_id"], owner)
+			}
+			_, sent := proxy.writes[0]["user_id"]
+			if sent != (owner != "current-owner") {
+				t.Errorf("user_id sent=%v, want only explicit owner changes", sent)
+			}
+		})
+	}
+}
+
 func TestKeyPassthroughExplicitEmptyClearsStoredGrant(t *testing.T) {
 	proxy := &fakeKeyProxy{metadata: map[string]interface{}{}}
 	srv := httptest.NewServer(proxy.handler())

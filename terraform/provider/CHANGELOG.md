@@ -52,6 +52,7 @@ longer signal it.
 
 ### Fixed
 
+- **key**: Explicit `user_id` reassignment is now sent on updates instead of silently retaining the old owner. Unchanged ownership is omitted from unrelated updates
 - **key**: Explicit empty `allowed_passthrough_routes` updates now clear stored grants and refresh clears removed grants from state. Omitting the attribute leaves server-managed grants unchanged. Generated raw keys are no longer assigned to resource data
 
 - **key**: Updates no longer resend unchanged `allowed_passthrough_routes`, avoiding an Enterprise-only 403 on OSS proxies when passthrough metadata is managed outside Terraform
