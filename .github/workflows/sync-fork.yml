@@ -1,0 +1,65 @@
+name: Sync fork without provider changes
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/sync-fork.yml"
+      - ".github/scripts/sync-fork.sh"
+      - ".github/scripts/test-sync-fork.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - run: bash .github/scripts/test-sync-fork.sh
+
+  sync:
+    if: github.repository == 'cosminfrincu/litellm' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: sync-fork-main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the upstream revision
+        id: check
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fork_sha=$(git rev-parse HEAD)
+          git fetch --no-tags https://github.com/BerriAI/litellm.git refs/heads/main
+          upstream_sha=$(git rev-parse FETCH_HEAD)
+          bash .github/scripts/sync-fork.sh "$upstream_sha"
+          echo "fork_sha=$fork_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+      - name: Merge the checked revision into the fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK_SHA: ${{ steps.check.outputs.fork_sha }}
+          UPSTREAM_SHA: ${{ steps.check.outputs.upstream_sha }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)
+          if [[ "$current_sha" != "$FORK_SHA" ]]; then
+            echo "::error::Fork main changed during the check. Run the workflow again"
+            exit 1
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/merges" \
+            -f base=main -f head="$UPSTREAM_SHA" --silent
