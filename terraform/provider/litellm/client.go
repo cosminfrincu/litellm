@@ -166,6 +166,12 @@ func (c *Client) UpdateKey(key *Key) (*Key, error) {
 	if key.Metadata != nil {
 		updateData["metadata"] = key.Metadata
 	}
+	if key.RouterSettings != nil {
+		updateData["router_settings"] = key.RouterSettings
+	}
+	if key.UserID != "" {
+		updateData["user_id"] = key.UserID
+	}
 	if key.ModelRPMLimit != nil {
 		updateData["model_rpm_limit"] = key.ModelRPMLimit
 	}
@@ -218,7 +224,7 @@ func (c *Client) UpdateKey(key *Key) (*Key, error) {
 	if len(key.AllowedRoutes) > 0 {
 		updateData["allowed_routes"] = key.AllowedRoutes
 	}
-	if len(key.AllowedPassthroughRoutes) > 0 {
+	if key.AllowedPassthroughRoutes != nil {
 		updateData["allowed_passthrough_routes"] = key.AllowedPassthroughRoutes
 	}
 	if key.RPMLimitType != "" {
@@ -308,6 +314,10 @@ func (c *Client) parseKeyResponse(resp map[string]interface{}) (*Key, error) {
 		case "metadata":
 			if m, ok := v.(map[string]interface{}); ok {
 				createdKey.Metadata = m
+			}
+		case "router_settings":
+			if m, ok := v.(map[string]interface{}); ok {
+				createdKey.RouterSettings = m
 			}
 		case "tpm_limit":
 			if i, ok := v.(float64); ok {
@@ -468,6 +478,11 @@ func (c *Client) sendRequest(method, path string, body interface{}) (map[string]
 		return nil, fmt.Errorf("error parsing response JSON: %v\nResponse body: %s", err, string(bodyBytes))
 	}
 
+	if strings.HasPrefix(path, "/key/") {
+		if err := preserveKeyJSONFields(bodyBytes, result); err != nil {
+			return nil, err
+		}
+	}
 	return result, nil
 }
 

@@ -56,13 +56,17 @@ The following arguments are supported:
 
 * `max_budget` - (Optional) Maximum budget for this key. This sets an upper limit on the total spend allowed for this key.
 
-* `user_id` - (Optional) User ID associated with this key. This links the key to a specific user in the LiteLLM system.
+* `user_id` - (Optional) User ID associated with this key. Set another nonempty ID to reassign ownership in place. Unchanged ownership is not sent during unrelated updates
 
 * `team_id` - (Optional) Team ID associated with this key. This links the key to a specific team in the LiteLLM system.
 
 * `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed for this key. This helps in controlling concurrent usage.
 
-* `metadata` - (Optional) Metadata associated with this key. This can be used to store additional, custom information about the key.
+* `metadata` - (Optional) Map of string metadata entries. Conflicts with `metadata_json`. Only declared entries are managed, and undeclared server entries are preserved
+
+* `metadata_json` - (Optional) JSON object of metadata entries, using `jsonencode({...})` for arrays, objects, numbers, booleans and nulls. Conflicts with `metadata`. Only declared top-level entries are managed. Removing an entry deletes that entry while preserving unrelated server metadata. Except for `allowed_passthrough_routes`, metadata fields with dedicated resource attributes must use those attributes
+
+* `router_settings` - (Optional) JSON object of per-key router settings, using `jsonencode({...})`. Only declared top-level settings are managed. Removing a setting restores inheritance. Explicit empty arrays and null values are preserved
 
 * `tpm_limit` - (Optional) Tokens per minute limit for this key. This sets a rate limit based on the number of tokens processed.
 
@@ -102,7 +106,7 @@ The following arguments are supported:
 
 * `allowed_routes` - (Optional) List of proxy routes this key is allowed to call.
 
-* `allowed_passthrough_routes` - (Optional) List of pass-through routes this key is allowed to call.
+* `allowed_passthrough_routes` - (Optional) List of pass-through routes, sent through the top-level API field and subject to the proxy's license and permission checks. Omission leaves server-managed grants unchanged. An explicit `[]` clears the stored list. Do not declare this attribute together with `metadata_json.allowed_passthrough_routes`
 
 * `rpm_limit_type` - (Optional) How the RPM limit is enforced. One of `guaranteed_throughput`, `best_effort_throughput` or `dynamic`.
 
@@ -118,15 +122,47 @@ The following arguments are supported:
 
 In addition to all arguments above, the following attributes are exported:
 
-* `key` - The generated API key. This is the actual key value that will be used for authentication.
+* `token_id` - The hashed key identifier. The `key` argument is write-only input for creation, not an exported credential. A proxy-generated raw key is not available to other resources or stored in state
 
 * `server_metadata` - Map of every metadata entry the proxy stores for this key, including entries not declared in `metadata`, so drift on them is visible on refresh. Entries already exposed as their own attributes (`model_rpm_limit`, `model_tpm_limit`, `tags`, `guardrails`, `enforced_params`, `allowed_passthrough_routes`, `rpm_limit_type`, `tpm_limit_type`, `prompts`) are omitted and non-string values are JSON encoded. Terraform never writes it; `metadata` still tracks only the entries declared in the configuration.
 
 * `spend` - The current spend for this key. This reflects the total amount spent using this key so far.
 
-## State Management
+## JSON settings
 
-Recent updates have improved how the Key resource manages its state. The provider now ensures that all non-zero and non-empty values are correctly persisted in the Terraform state file. This means that any value you set will be accurately reflected in your state, preventing unnecessary updates and ensuring consistency between your configuration and the actual resource state.
+```hcl
+resource "litellm_key" "batch_client" {
+  key_alias = "batch-client"
+  models    = ["my-model"]
+  allowed_routes = [
+    "openai_routes",
+    "info_routes",
+    "/direct/openai/v1/files",
+    "/direct/openai/v1/batches",
+  ]
+  metadata_json = jsonencode({
+    environment = "development"
+    allowed_passthrough_routes = [
+      "/direct/openai/v1/files",
+      "/direct/openai/v1/batches",
+    ]
+  })
+  router_settings = jsonencode({
+    fallbacks                = []
+    context_window_fallbacks = []
+  })
+}
+```
+
+`metadata_json` sends a JSON object in the API's `metadata` field. It never sends a top-level `allowed_passthrough_routes` field. Support for metadata-based native route grants depends on the proxy version and its authorization policy
+
+For either JSON attribute, `{}` or removing the attribute deletes previously managed entries. It does not delete entries managed elsewhere. Nested objects are owned as whole values, not merged recursively. Refresh exposes drift on declared entries, and create/update verifies that those entries were stored
+
+An empty or absent native route grant can restore Team inheritance. It is not a universal deny policy. Keep any explicit deny value required by your deployment. Native batch endpoints may forward model names inside uploaded files unchanged, so these settings do not add per-model batch enforcement
+
+Empty fallback arrays disable those fallback lists. Removing the settings restores inheritance. A null value is sent as JSON null and may have different behavior on your proxy version
+
+These JSON attributes contain configuration, not credentials. Their contents are stored in state. Updates read the latest server object and preserve undeclared entries, but the API has no compare-and-swap protection against concurrent metadata writers
 
 ## Import
 

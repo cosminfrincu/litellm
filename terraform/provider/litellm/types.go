@@ -146,6 +146,7 @@ type Key struct {
 	TeamID                   string                 `json:"team_id,omitempty"`
 	MaxParallelRequests      *int                   `json:"max_parallel_requests,omitempty"`
 	Metadata                 map[string]interface{} `json:"metadata,omitempty"`
+	RouterSettings           map[string]interface{} `json:"router_settings,omitempty"`
 	TPMLimit                 *int                   `json:"tpm_limit,omitempty"`
 	RPMLimit                 *int                   `json:"rpm_limit,omitempty"`
 	BudgetDuration           string                 `json:"budget_duration,omitempty"`

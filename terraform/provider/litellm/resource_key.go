@@ -20,6 +20,7 @@ func resourceKey() *schema.Resource {
 		ReadContext:   resourceKeyRead,
 		UpdateContext: resourceKeyUpdate,
 		DeleteContext: resourceKeyDelete,
+		CustomizeDiff: validateKeyJSONOwnership,
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
@@ -67,9 +68,25 @@ func resourceKey() *schema.Resource {
 				Computed: true,
 			},
 			"metadata": {
-				Type:     schema.TypeMap,
-				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
+				Type:          schema.TypeMap,
+				Optional:      true,
+				Elem:          &schema.Schema{Type: schema.TypeString},
+				ConflictsWith: []string{"metadata_json"},
+			},
+			"metadata_json": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ConflictsWith:    []string{"metadata"},
+				ValidateFunc:     validateKeyMetadataJSON,
+				DiffSuppressFunc: suppressEquivalentKeyJSON,
+				Description:      "JSON object of owned metadata entries. Supports nested values and allowed_passthrough_routes. Other fields exposed as resource attributes must use those attributes. Undeclared entries are preserved; removing an owned entry deletes it",
+			},
+			"router_settings": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateFunc:     validateKeyJSONObject,
+				DiffSuppressFunc: suppressEquivalentKeyJSON,
+				Description:      "JSON object of owned per-key router settings. Undeclared settings are preserved; removing an owned setting restores inheritance. Empty arrays and null values are sent unchanged",
 			},
 			"server_metadata": {
 				Type:        schema.TypeMap,
@@ -176,9 +193,10 @@ func resourceKey() *schema.Resource {
 				DiffSuppressFunc: suppressUnconfiguredAllowedRoutes,
 			},
 			"allowed_passthrough_routes": {
-				Type:     schema.TypeList,
-				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
+				Type:             schema.TypeList,
+				Optional:         true,
+				Elem:             &schema.Schema{Type: schema.TypeString},
+				DiffSuppressFunc: suppressUnconfiguredPassthroughRoutes,
 			},
 			"rpm_limit_type": {
 				Type:        schema.TypeString,
@@ -286,6 +304,9 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, m interface{
 
 	key := &Key{}
 	mapResourceDataToKey(d, key)
+	if err := configureKeyJSON(d, key); err != nil {
+		return diag.FromErr(err)
+	}
 	// A config-supplied key value becomes the key itself; when absent the
 	// proxy generates one. Write-only attributes are invisible to d.Get in
 	// real Terraform runs, so read the raw config first.
@@ -338,10 +359,14 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, m interface{
 	}
 
 	d.SetId(createdKey.TokenID)
-	// Set the write-only key value so it's available during this apply
-	// but will not be persisted to state.
-	d.Set("key", createdKey.Key)
-	return resourceKeyRead(ctx, d, m)
+	stored, err := c.GetKey(d.Id())
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if err := verifyKeyJSONUpdate(d, key, stored); err != nil {
+		return diag.FromErr(err)
+	}
+	return refreshKeyResourceData(d, stored)
 }
 
 func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
@@ -352,6 +377,10 @@ func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{})
 		return diag.FromErr(fmt.Errorf("error reading key: %s", err))
 	}
 
+	return refreshKeyResourceData(d, key)
+}
+
+func refreshKeyResourceData(d *schema.ResourceData, key *Key) diag.Diagnostics {
 	if key == nil {
 		log.Printf("[WARN] Key %s not found, removing from state", d.Id())
 		d.SetId("")
@@ -359,6 +388,9 @@ func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{})
 	}
 
 	d.Set("server_metadata", serverKeyMetadata(key.Metadata))
+	if err := readKeyJSON(d, key); err != nil {
+		return diag.FromErr(err)
+	}
 	key.Metadata = declaredKeyMetadata(key.Metadata, d.Get("metadata").(map[string]interface{}))
 	mapKeyToResourceData(d, key)
 	return nil
@@ -369,8 +401,14 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{
 
 	key := &Key{Key: d.Id()}
 	mapResourceDataToKey(d, key)
+	if !d.HasChange("user_id") {
+		key.UserID = ""
+	}
 	if allowedRoutesNotConfigured(d) {
 		key.AllowedRoutes = nil
+	}
+	if !d.HasChange("allowed_passthrough_routes") {
+		key.AllowedPassthroughRoutes = nil
 	}
 	if !d.HasChange("duration") {
 		key.Duration = ""
@@ -378,17 +416,22 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{
 	key.ModelRPMLimit = changedMap(d, "model_rpm_limit")
 	key.ModelTPMLimit = changedMap(d, "model_tpm_limit")
 
-	metadata, err := plannedKeyMetadata(c, d)
-	if err != nil {
+	if err := plannedKeySettings(c, d, key); err != nil {
 		return failedKeyUpdate(ctx, d, m, err)
 	}
-	key.Metadata = metadata
 
 	if _, err := c.UpdateKey(key); err != nil {
 		return failedKeyUpdate(ctx, d, m, err)
 	}
 
-	return resourceKeyRead(ctx, d, m)
+	stored, err := c.GetKey(d.Id())
+	if err != nil {
+		return failedKeyUpdate(ctx, d, m, err)
+	}
+	if err := verifyKeyJSONUpdate(d, key, stored); err != nil {
+		return failedKeyUpdate(ctx, d, m, err)
+	}
+	return refreshKeyResourceData(d, stored)
 }
 
 // Deleting a team cascade-deletes its keys, so an apply that moves a key onto a
@@ -464,22 +507,12 @@ func suppressUnconfiguredAllowedRoutes(k, old, new string, d *schema.ResourceDat
 	return true
 }
 
-var errKeyGone = errors.New("no longer exists")
-
-func plannedKeyMetadata(c *Client, d *schema.ResourceData) (map[string]interface{}, error) {
-	if !d.HasChange("metadata") {
-		return nil, nil
-	}
-	current, err := c.GetKey(d.Id())
-	if err != nil {
-		return nil, err
-	}
-	if current == nil {
-		return nil, fmt.Errorf("key %s %w", d.Id(), errKeyGone)
-	}
-	oldDeclared, newDeclared := d.GetChange("metadata")
-	return mergeKeyMetadata(current.Metadata, oldDeclared.(map[string]interface{}), newDeclared.(map[string]interface{})), nil
+func suppressUnconfiguredPassthroughRoutes(_ string, _, _ string, d *schema.ResourceData) bool {
+	raw, diags := d.GetRawConfigAt(cty.GetAttrPath("allowed_passthrough_routes"))
+	return !diags.HasError() && raw.IsNull()
 }
+
+var errKeyGone = errors.New("no longer exists")
 
 func declaredKeyMetadata(server, declared map[string]interface{}) map[string]interface{} {
 	if server == nil {
@@ -594,8 +627,6 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 	// It is safe to store in state since it cannot be used to authenticate.
 	d.Set("token_id", d.Id())
 
-	// Note: "key" is write-only and must not be set here (Read operations).
-	// It is only set during Create so it is available during apply.
 	if key.KeyType != "" {
 		d.Set("key_type", key.KeyType)
 	}
@@ -672,9 +703,7 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 		d.Set("enforced_params", key.EnforcedParams)
 	}
 	d.Set("allowed_routes", append([]string{}, key.AllowedRoutes...))
-	if len(key.AllowedPassthroughRoutes) > 0 {
-		d.Set("allowed_passthrough_routes", key.AllowedPassthroughRoutes)
-	}
+	d.Set("allowed_passthrough_routes", append([]string{}, key.AllowedPassthroughRoutes...))
 	if key.RPMLimitType != "" {
 		d.Set("rpm_limit_type", key.RPMLimitType)
 	}
