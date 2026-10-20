@@ -952,6 +952,7 @@ func applyKeyUpdate(t *testing.T, client *Client, stateAttrs map[string]string, 
 	t.Helper()
 	r := resourceKey()
 	state := &terraform.InstanceState{ID: "hash-1", Attributes: stateAttrs}
+	state.RawConfig = keyJSONRawConfig(t, config)
 	diff, err := r.Diff(context.Background(), state, terraform.NewResourceConfigRaw(config), client)
 	if err != nil {
 		t.Fatalf("Diff returned error: %v", err)
@@ -959,6 +960,7 @@ func applyKeyUpdate(t *testing.T, client *Client, stateAttrs map[string]string, 
 	if diff == nil {
 		t.Fatalf("expected a non-empty diff between %v and %v", stateAttrs, config)
 	}
+	diff.RawConfig = state.RawConfig
 	newState, diags := r.Apply(context.Background(), state, diff, client)
 	if diags.HasError() {
 		t.Fatalf("Apply returned error: %v", diags)
