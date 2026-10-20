@@ -1,6 +1,13 @@
 name: Terraform Provider
 
 on:
+  workflow_dispatch:
+    inputs:
+      provider_version:
+        description: Version for fork build packages
+        required: true
+        default: "0.1.0"
+        type: string
   push:
     paths:
       - "terraform/provider/**"
@@ -56,6 +63,38 @@ jobs:
 
       - name: Test
         run: go test -timeout 120s ./...
+
+      - name: Package fork provider
+        if: github.event_name == 'workflow_dispatch' && github.repository == 'cosminfrincu/litellm'
+        env:
+          PROVIDER_VERSION: ${{ inputs.provider_version }}
+          CGO_ENABLED: "0"
+        run: |
+          [[ "$PROVIDER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p dist
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            mkdir -p "dist/$target"
+            GOOS="${target%_*}" GOARCH="${target#*_}" go build -trimpath -ldflags="-s -w" \
+              -o "dist/$target/terraform-provider-litellm_v${PROVIDER_VERSION}" .
+            cp ../../LICENSE "dist/$target/LICENSE"
+            (cd "dist/$target" && zip -X "../terraform-provider-litellm_${PROVIDER_VERSION}_${target}.zip" ./*)
+          done
+          git rev-parse HEAD > dist/SOURCE_COMMIT
+          go version > dist/BUILD_TOOLCHAIN
+          (cd dist && sha256sum ./*.zip SOURCE_COMMIT BUILD_TOOLCHAIN > SHA256SUMS)
+
+      - name: Upload fork provider packages
+        if: github.event_name == 'workflow_dispatch' && github.repository == 'cosminfrincu/litellm'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: terraform-provider-litellm-${{ inputs.provider_version }}
+          path: |
+            terraform/provider/dist/*.zip
+            terraform/provider/dist/SHA256SUMS
+            terraform/provider/dist/SOURCE_COMMIT
+            terraform/provider/dist/BUILD_TOOLCHAIN
+          if-no-files-found: error
+          retention-days: 14
 
   endpoint-drift:
     name: Provider endpoints vs proxy OpenAPI schema
